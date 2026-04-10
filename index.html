@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>Wasserzähler</title>
+<title>Wasserzähler Dashboard</title>
 
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
@@ -10,23 +10,44 @@
 
 <style>
 body {
+    margin:0;
     font-family: Arial;
-    background: #0f172a;
-    color: white;
+    background:#0f172a;
+    color:white;
 }
+
 nav {
-    display: flex;
-    background: #1e293b;
+    display:flex;
+    background:#1e293b;
 }
+
 nav button {
     flex:1;
     padding:15px;
+    border:none;
     background:none;
     color:white;
-    border:none;
+    cursor:pointer;
 }
-.container { padding:20px; }
-input { padding:10px; margin:5px; }
+
+nav button:hover {
+    background:#334155;
+}
+
+.container {
+    padding:20px;
+}
+
+input {
+    padding:10px;
+    margin:5px;
+}
+
+button {
+    padding:10px 15px;
+    cursor:pointer;
+}
+
 .log {
     background:#1e293b;
     padding:10px;
@@ -45,28 +66,38 @@ input { padding:10px; margin:5px; }
 <button onclick="tab('logs')">Logs</button>
 </nav>
 
+<!-- INPUT -->
 <div id="input" class="container">
-<h2>Neuer Stand</h2>
+<h2>Zählerstand eingeben</h2>
 
-<input type="number" id="value" placeholder="Zählerstand">
+<input type="number" id="value" placeholder="Stand">
 <input type="date" id="date">
 
 <br>
-<button onclick="add()">Speichern</button>
+<button onclick="addEntry()">Speichern</button>
 </div>
 
+<!-- STATS -->
 <div id="stats" class="container" style="display:none;">
 <canvas id="chart"></canvas>
-<p id="day"></p>
-<p id="month"></p>
-<p id="year"></p>
+
+<p id="avgDay"></p>
+<p id="avgMonth"></p>
+<p id="avgYear"></p>
+
+<div id="yearStats"></div>
 </div>
 
+<!-- LOGS -->
 <div id="logs" class="container" style="display:none;">
-<div id="list"></div>
+<div id="logList"></div>
 </div>
 
 <script>
+
+//////////////////////////////
+// 🔥 FIREBASE
+//////////////////////////////
 
 const firebaseConfig = {
   apiKey: "AIzaSyAWXycUp5RfYG539miU6xusJEXxAkz22U4",
@@ -74,27 +105,46 @@ const firebaseConfig = {
   projectId: "wasserstand-4d7fd"
 };
 
-
-const app = firebase.initializeApp(firebaseConfig);
+firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
 let entries = [];
+let chart = null;
+
+//////////////////////////////
+// TAB SYSTEM
+//////////////////////////////
 
 function tab(t){
-    document.querySelectorAll('.container').forEach(d=>d.style.display="none");
+    document.querySelectorAll('.container').forEach(e=>e.style.display="none");
     document.getElementById(t).style.display="block";
-    if(t==="stats") stats();
-    if(t==="logs") render();
+
+    if(t==="stats") updateStats();
+    if(t==="logs") renderLogs();
 }
+
+//////////////////////////////
+// LOAD
+//////////////////////////////
 
 async function load(){
     const snap = await db.collection("water").get();
-    entries = snap.docs.map(d=>({...d.data(), id:d.id}));
+
+    entries = snap.docs.map(d=>({
+        id: d.id,
+        ...d.data()
+    }));
+
     entries.sort((a,b)=> new Date(a.date)-new Date(b.date));
 }
-load();
 
-async function add(){
+window.onload = load;
+
+//////////////////////////////
+// ADD
+//////////////////////////////
+
+async function addEntry(){
     let value = Number(document.getElementById("value").value);
     let date = document.getElementById("date").value;
 
@@ -103,48 +153,214 @@ async function add(){
     }
 
     await db.collection("water").add({value, date});
-    load();
+    await load();
 }
 
-function render(){
-    const el = document.getElementById("list");
+//////////////////////////////
+// DELETE
+//////////////////////////////
+
+async function deleteEntry(id){
+    await db.collection("water").doc(id).delete();
+    await load();
+}
+
+//////////////////////////////
+// LOGS
+//////////////////////////////
+
+function renderLogs(){
+    let el = document.getElementById("logList");
     el.innerHTML="";
 
     entries.forEach(e=>{
         let div = document.createElement("div");
         div.className="log";
-        div.innerHTML = `${e.date} - ${e.value}
-        <button onclick="del('${e.id}')">X</button>`;
+        div.innerHTML = `
+            ${e.date} — ${e.value}
+            <button onclick="deleteEntry('${e.id}')">X</button>
+        `;
         el.appendChild(div);
     });
 }
 
-async function del(id){
-    await db.collection("water").doc(id).delete();
-    load();
+//////////////////////////////
+// 🔥 VERBRAUCH
+//////////////////////////////
+
+function getConsumption(){
+    if(entries.length < 2) return {values:[], labels:[]};
+
+    let values=[];
+    let labels=[];
+
+    for(let i=1;i<entries.length;i++){
+        let prev=entries[i-1].value;
+        let curr=entries[i].value;
+
+        let diff;
+
+        if(curr < prev){
+            diff = curr; // Zählerwechsel
+        } else {
+            diff = curr - prev;
+        }
+
+        values.push(diff);
+        labels.push(entries[i].date);
+    }
+
+    return {values, labels};
 }
 
-function stats(){
-    if(entries.length<2) return;
+//////////////////////////////
+// ⚠️ LEAK
+//////////////////////////////
+
+function detectLeak(values){
+    if(values.length < 3) return false;
+
+    let avg = values.reduce((a,b)=>a+b,0)/values.length;
+
+    return values.some(v => v > avg * 2.5);
+}
+
+//////////////////////////////
+// 📊 GROUP YEAR
+//////////////////////////////
+
+function groupByYear(){
+    let map = {};
+
+    entries.forEach(e=>{
+        let y = new Date(e.date).getFullYear();
+        if(!map[y]) map[y]=[];
+        map[y].push(e);
+    });
+
+    return map;
+}
+
+//////////////////////////////
+// 📈 YEAR CALC (FIXED)
+//////////////////////////////
+
+function calcYear(data){
+    if(data.length === 0) return null;
+
+    data.sort((a,b)=> new Date(a.date)-new Date(b.date));
+
+    let total = 0;
+
+    for(let i=1;i<data.length;i++){
+        let prev=data[i-1].value;
+        let curr=data[i].value;
+
+        if(curr < prev) total += curr;
+        else total += curr-prev;
+    }
+
+    // 🔥 FIX: nur 1 Wert → keine falsche Fehlmeldung
+    if(data.length === 1){
+        return {
+            total: 0,
+            avgDay: 0,
+            avgMonth: 0,
+            avgYear: 0,
+            single: true
+        };
+    }
+
+    let days = (new Date(data.at(-1).date)-new Date(data[0].date))/(1000*60*60*24);
+
+    if(days <= 0){
+        return {
+            total: 0,
+            avgDay: 0,
+            avgMonth: 0,
+            avgYear: 0,
+            single: true
+        };
+    }
+
+    return {
+        total,
+        avgDay: total/days,
+        avgMonth: total/(days/30),
+        avgYear: total/(days/365),
+        single: false
+    };
+}
+
+//////////////////////////////
+// 🧾 YEAR UI
+//////////////////////////////
+
+function renderYearStats(){
+    let el = document.getElementById("yearStats");
+    let grouped = groupByYear();
+
+    let html = "<h3>Jahresübersicht</h3>";
+
+    Object.keys(grouped).sort().forEach(y=>{
+        let s = calcYear(grouped[y]);
+        if(!s) return;
+
+        html += `
+        <div style="background:#1e293b;padding:10px;margin:5px 0;">
+            <b>${y}</b><br>
+            ${
+                s.single
+                ? "⚠️ Nur ein Messwert vorhanden"
+                : `
+                    Ø Tag: ${s.avgDay.toFixed(2)}<br>
+                    Ø Monat: ${s.avgMonth.toFixed(2)}<br>
+                    Ø Jahr: ${s.avgYear.toFixed(2)}
+                `
+            }
+        </div>
+        `;
+    });
+
+    el.innerHTML = html;
+}
+
+//////////////////////////////
+// 📊 STATS
+//////////////////////////////
+
+function updateStats(){
+    if(entries.length < 2) return;
+
+    let c = getConsumption();
 
     let total = entries.at(-1).value - entries[0].value;
-    let days = (new Date(entries.at(-1).date) - new Date(entries[0].date))/(1000*60*60*24);
+    let days = (new Date(entries.at(-1).date)-new Date(entries[0].date))/(1000*60*60*24);
 
-    document.getElementById("day").innerText = "Tag: " + (total/days).toFixed(2);
-    document.getElementById("month").innerText = "Monat: " + (total/(days/30)).toFixed(2);
-    document.getElementById("year").innerText = "Jahr: " + (total/(days/365)).toFixed(2);
+    document.getElementById("avgDay").innerText = "Ø Tag: " + (total/days).toFixed(2);
+    document.getElementById("avgMonth").innerText = "Ø Monat: " + (total/(days/30)).toFixed(2);
+    document.getElementById("avgYear").innerText = "Ø Jahr: " + (total/(days/365)).toFixed(2);
 
-    new Chart(document.getElementById("chart"), {
-        type:"line",
+    if(detectLeak(c.values)){
+        document.getElementById("avgDay").innerHTML += "<br>⚠️ Ungewöhnlicher Verbrauch!";
+    }
+
+    if(chart) chart.destroy();
+
+    chart = new Chart(document.getElementById("chart"), {
+        type:"bar",
         data:{
-            labels: entries.map(e=>e.date),
+            labels:c.labels,
             datasets:[{
-                label:"Verbrauch",
-                data: entries.map(e=>e.value)
+                label:"Verbrauch zwischen Messungen",
+                data:c.values
             }]
         }
     });
+
+    renderYearStats();
 }
+
 </script>
 
 </body>
