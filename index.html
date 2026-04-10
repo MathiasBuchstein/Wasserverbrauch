@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Wasserzähler</title>
+
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+body {
+    font-family: Arial;
+    background: #0f172a;
+    color: white;
+}
+nav {
+    display: flex;
+    background: #1e293b;
+}
+nav button {
+    flex:1;
+    padding:15px;
+    background:none;
+    color:white;
+    border:none;
+}
+.container { padding:20px; }
+input { padding:10px; margin:5px; }
+.log {
+    background:#1e293b;
+    padding:10px;
+    margin:5px 0;
+    display:flex;
+    justify-content:space-between;
+}
+</style>
+</head>
+
+<body>
+
+<nav>
+<button onclick="tab('input')">Eingabe</button>
+<button onclick="tab('stats')">Statistik</button>
+<button onclick="tab('logs')">Logs</button>
+</nav>
+
+<div id="input" class="container">
+<h2>Neuer Stand</h2>
+
+<input type="number" id="value" placeholder="Zählerstand">
+<input type="date" id="date">
+
+<br>
+<button onclick="add()">Speichern</button>
+</div>
+
+<div id="stats" class="container" style="display:none;">
+<canvas id="chart"></canvas>
+<p id="day"></p>
+<p id="month"></p>
+<p id="year"></p>
+</div>
+
+<div id="logs" class="container" style="display:none;">
+<div id="list"></div>
+</div>
+
+<script>
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAWXycUp5RfYG539miU6xusJEXxAkz22U4",
+  authDomain: "wasserstand-4d7fd.firebaseapp.com",
+  projectId: "wasserstand-4d7fd"
+};
+
+
+const app = firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+let entries = [];
+
+function tab(t){
+    document.querySelectorAll('.container').forEach(d=>d.style.display="none");
+    document.getElementById(t).style.display="block";
+    if(t==="stats") stats();
+    if(t==="logs") render();
+}
+
+async function load(){
+    const snap = await db.collection("water").get();
+    entries = snap.docs.map(d=>({...d.data(), id:d.id}));
+    entries.sort((a,b)=> new Date(a.date)-new Date(b.date));
+}
+load();
+
+async function add(){
+    let value = Number(document.getElementById("value").value);
+    let date = document.getElementById("date").value;
+
+    if(!date){
+        date = new Date().toISOString().split("T")[0];
+    }
+
+    await db.collection("water").add({value, date});
+    load();
+}
+
+function render(){
+    const el = document.getElementById("list");
+    el.innerHTML="";
+
+    entries.forEach(e=>{
+        let div = document.createElement("div");
+        div.className="log";
+        div.innerHTML = `${e.date} - ${e.value}
+        <button onclick="del('${e.id}')">X</button>`;
+        el.appendChild(div);
+    });
+}
+
+async function del(id){
+    await db.collection("water").doc(id).delete();
+    load();
+}
+
+function stats(){
+    if(entries.length<2) return;
+
+    let total = entries.at(-1).value - entries[0].value;
+    let days = (new Date(entries.at(-1).date) - new Date(entries[0].date))/(1000*60*60*24);
+
+    document.getElementById("day").innerText = "Tag: " + (total/days).toFixed(2);
+    document.getElementById("month").innerText = "Monat: " + (total/(days/30)).toFixed(2);
+    document.getElementById("year").innerText = "Jahr: " + (total/(days/365)).toFixed(2);
+
+    new Chart(document.getElementById("chart"), {
+        type:"line",
+        data:{
+            labels: entries.map(e=>e.date),
+            datasets:[{
+                label:"Verbrauch",
+                data: entries.map(e=>e.value)
+            }]
+        }
+    });
+}
+</script>
+
+</body>
+</html>
